@@ -114,6 +114,138 @@ Here’s how to approach it step-by-step:
 
 ---
 
+### 🔍 **What is HTTP Parameter Injection?**
+
+HTTP Parameter Injection happens when **user input is passed unsanitized into a back-end HTTP request** as parameters. This allows attackers to sneak in extra parameters that the server interprets as valid, potentially altering its behavior.
+
+It’s similar to SSRF or command injection in spirit—**the app is trusting input too much and proxying it to something sensitive** (usually another internal service or script).
+
+---
+
+### ⚙️ **How the Front-End and Back-End Work Together**
+
+Let’s consider this front-end request:
+
+```
+POST /bank/48/Default.aspx HTTP/1.0
+Host: mdsec.net
+Content-Length: 65
+
+FromAccount=18281008&Amount=1430&ToAccount=08447656&Submit=Submit
+```
+
+This gets parsed and passed to a **back-end internal service** like this:
+
+```
+POST /doTransfer.asp HTTP/1.0
+Host: mdsec-mgr.int.mdsec.net
+Content-Length: 44
+
+fromacc=18281008&amount=1430&toacc=08447656
+```
+
+At this point, the **internal server handles the actual bank transfer**. So if you can manipulate what's being sent in this second request... you win.
+
+---
+
+### 🚨 **What Makes It Vulnerable?**
+
+The back-end accepts an extra parameter like:
+
+```
+clearedfunds=true
+```
+
+If this parameter is present, the back-end **skips validating whether the account has enough money**. Normally, the front-end shouldn’t send this. But if you can sneak it in, the money goes through—even if the account is empty.
+
+---
+
+### 🧠 **Payload Logic: How to Sneak in an Extra Parameter**
+
+Here's how you inject `clearedfunds=true` from the front-end:
+
+```
+POST /bank/48/Default.aspx HTTP/1.0
+Host: mdsec.net
+Content-Length: 96
+
+FromAccount=18281008&Amount=1430&ToAccount=08447656%26clearedfunds%3dtrue&Submit=Submit
+```
+
+> ✅ **Explanation of the Payload**
+> You inject the string `&clearedfunds=true` into the **value of an existing parameter**, like `ToAccount`.
+> To do this stealthily, you URL-encode:
+
+* `&` as `%26`
+* `=` as `%3d`
+
+So this:
+
+```
+ToAccount=08447656%26clearedfunds%3dtrue
+```
+
+Becomes this when decoded by the server:
+
+```
+ToAccount=08447656&clearedfunds=true
+```
+
+> 💡 **Why this works:**
+> The front-end app sees `ToAccount` as one string. But when it builds the back-end request, it **just slaps that value into the URL without validating it**, causing a new parameter (`clearedfunds=true`) to appear in the back-end request.
+
+Here’s the final back-end payload:
+
+```
+POST /doTransfer.asp HTTP/1.0
+Host: mdsec-mgr.int.mdsec.net
+Content-Length: 62
+
+fromacc=18281008&amount=1430&toacc=08447656&clearedfunds=true
+```
+
+The app **skips the cleared funds check**, and the transfer succeeds.
+
+---
+
+### 🧪 How to Detect It (Hack Steps)
+
+1. **Find a Parameter Sink**
+   Look for places where parameters are reused server-side—like payment, search, login, etc.
+
+2. **Try Injecting Parameters**
+   Use `%26param%3dvalue` in a parameter value and see how the app behaves.
+
+3. **Look for Silent Success**
+   Unlike SOAP, there’s often **no error on bad params**. The app may silently accept or ignore them unless you're hitting a real back-end trigger.
+
+4. **Guess or Research Back-End Parameters**
+   This part is hard in blackbox testing unless:
+
+   * You know the tech stack (like ASP or PHP)
+   * You can decompile mobile apps or JavaScript
+   * You know the third-party component used on the back-end (many reuse known params)
+
+---
+
+### 💣 Real-World Tip
+
+If the site uses a framework or internal API like `/internal/api/pay` or `/backoffice/doStuff`, you can often reverse-engineer the required parameters from leaked documentation or similar APIs. Also, tools like **Param Miner** in Burp Suite are helpful to auto-discover hidden or reflected parameters.
+
+---
+
+### ✅ Summary
+
+| Concept          | Details                                                                                                  |
+| ---------------- | -------------------------------------------------------------------------------------------------------- |
+| 💥 Vulnerability | Unsanitized user input injected into back-end HTTP parameters                                            |
+| 🧠 Core Logic    | Encoded characters `%26` and `%3d` trick the server into interpreting part of a value as a new parameter |
+| 🔓 Impact        | Can bypass security logic like authentication, validation, or access controls                            |
+| 🧪 Detection     | Try injecting extra parameters via encoded input; look for success or altered responses                  |
+| 🔐 Defense       | Whitelist expected input; strictly validate and sanitize user-controlled values before internal reuse    |
+
+---
+
 ## 🧬 Section: HTTP Parameter Pollution (HPP)
 
 ---
@@ -267,5 +399,135 @@ Multiple layers (e.g., WAF, load balancer, and back-end server) might **parse re
 | 💥 Exploit Strategy | Inject polluted param before or after legit param, depending on parsing behavior           |
 | 🧪 Detection        | Try `%26param%3dvalue` in different positions; observe response changes                    |
 | 🔐 Defense          | Normalize parameter handling, disallow duplicates, ensure parsing consistency across stack |
+
+---
+
+## 🧠 Section: Attacks Against URL Translation — Explained
+
+---
+
+### 🔍 What's Going On Here?
+
+Some applications transform friendly-looking URLs into something more functional behind the scenes. This process is called **URL translation** or **URL rewriting**.
+
+For example:
+
+```
+/pub/user/marcus → gets rewritten as → /inc/user_mgr.php?mode=view&name=marcus
+```
+
+This is often done using rules in `.htaccess` (Apache’s `mod_rewrite`) or a backend router that maps URL paths to internal scripts or parameters.
+
+---
+
+### ⚠️ What’s the Vulnerability?
+
+These translated URLs can become a weak point if:
+
+1. **You can inject parameters** into the rewritten part of the URL (HPI – HTTP Parameter Injection).
+2. **The backend allows duplicated parameters** and you can **override original values** (HPP – HTTP Parameter Pollution).
+
+This means if a URL like this:
+
+```
+/pub/user/marcus%26mode=edit
+```
+
+...gets URL-decoded during rewriting, it might become:
+
+```
+/inc/user_mgr.php?mode=view&name=marcus&mode=edit
+```
+
+And now you’ve got **two `mode` parameters**, one benign (`view`) and one malicious (`edit`).
+
+💥 If the server uses **the last occurrence**, your `edit` wins, and boom — you bypass front-end controls.
+
+---
+
+### 🧪 Let’s See This In Action – Payload Logic
+
+**Original rewrite rule:**
+
+```apache
+RewriteRule ^pub/user/([^/\.]+)$ /inc/user_mgr.php?mode=view&name=$1
+```
+
+This turns:
+
+```
+/pub/user/marcus
+```
+
+into:
+
+```
+/inc/user_mgr.php?mode=view&name=marcus
+```
+
+---
+
+### 🔥 Payload Example:
+
+```
+/pub/user/marcus%26mode=edit
+```
+
+#### 🔍 How This Works:
+
+* `%26` = `&` → This makes the input effectively: `marcus&mode=edit`
+* So now it rewrites to:
+
+  ```
+  /inc/user_mgr.php?mode=view&name=marcus&mode=edit
+  ```
+* If PHP uses **last occurrence wins**, then `mode=edit` takes over.
+* Attacker goes from viewing Marcus's profile to editing it, **bypassing access controls**.
+
+💡 The logic behind this attack is that:
+
+* The **URL decoding** happens **before** the rewritten rule is applied.
+* The value (`marcus%26mode=edit`) is interpreted as:
+
+  * name = `marcus`
+  * mode = `edit`
+
+---
+
+### 🧪 Alternate Encodings to Evade Filters:
+
+Try injecting your extra parameters using different encodings to bypass WAFs:
+
+* `%26foo%3dbar` → URL-encoded: `&foo=bar`
+* `%3bfoo%3dbar` → URL-encoded: `;foo=bar` (some servers treat `;` as param separator)
+* `%2526foo%253dbar` → Double-encoded `&foo=bar`, might bypass first-layer filters
+
+---
+
+### 🧠 Attack Workflow (Hack Steps Summary)
+
+1. **Try injecting extra parameters** into URL path using encodings like `%26`, `%3b`, `%2526`, etc.
+2. **Observe behavior** — does it behave like the original value was untouched? (could indicate injection worked)
+3. **Attempt override** by injecting same parameter again (like `mode`) with your own value.
+4. **Test whether you bypass frontend validation** (e.g., force `edit` mode while frontend sends only `view`).
+5. **Use it for content discovery** — try replacing injected param with guesses like `admin=true`, `debug=1`, etc.
+6. **Test various locations** — query string, cookies, POST body — and different param orders to maximize chances.
+
+---
+
+## 📚 Real-World Impact
+
+* Can lead to **privilege escalation**, **bypassing role-based access**, or **modifying restricted resources**.
+* Very effective in legacy PHP apps or those using URL rewriting.
+
+---
+
+## ✅ Practice Questions
+
+1. **What allows an attacker to override a parameter value during URL translation?**
+2. **Why does the `%26mode=edit` payload work during URL rewriting in PHP?**
+3. **What role does parameter ordering play in successful parameter injection attacks?**
+4. **How can you attempt to bypass WAFs when injecting parameters into rewritten URLs?**
+5. **What might be the impact of successfully injecting `mode=edit` into a profile view URL?**
 
 ---
