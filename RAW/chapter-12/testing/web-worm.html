@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MyBlog - XSS Test Page</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .comment { border-bottom: 1px solid #ccc; margin-top: 10px; padding: 10px; }
+        img { max-width: 300px; }
+    </style>
+</head>
+<body>
+    <h1>Welcome to MyBlog</h1>
+
+    <nav>
+        <a href="#">Home</a> |
+        <a href="#">Articles</a> |
+        <a href="#">About</a>
+    </nav>
+
+    <section>
+        <h2>Photo of the Day</h2>
+        <img id="dailyImage" src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS8rFgYDBcfeZQj5KLA1cfLzmpn2bo7Zfp7DA&s" alt="Cute Kitten">
+        <p id="imageCaption">Look at this car!</p>
+    </section>
+
+    <section>
+        <h2>Search the Blog</h2>
+        <form method="GET">
+            <input type="text" name="query" placeholder="Search..." />
+            <button type="submit">Search</button>
+        </form>
+        <div id="searchResults"></div>
+    </section>
+
+    <section>
+        <h2>Leave a Comment</h2>
+        <form id="commentForm">
+            <input type="text" id="username" placeholder="Your name" required />
+            <br><br>
+            <textarea id="commentText" placeholder="Your comment" rows="4" cols="50" required></textarea>
+            <br><br>
+            <button type="submit">Post Comment</button>
+        </form>
+        <div id="commentsSection">
+            <h3>Comments</h3>
+        </div>
+    </section>
+
+    <footer>
+        <p>&copy; 2025 MyBlog. All rights reserved.</p>
+    </footer>
+
+    <script>
+        // Reflected XSS in search
+        const params = new URLSearchParams(window.location.search);
+        const searchQuery = params.get("query");
+        if (searchQuery) {
+            document.getElementById("searchResults").innerHTML =
+                `<p>Search results for: <strong>${searchQuery}</strong></p>`;
+        }
+
+        // Simulated Persistent XSS via comment form
+        document.getElementById("commentForm").addEventListener("submit", function (e) {
+            e.preventDefault();
+            const username = document.getElementById("username").value;
+            const comment = document.getElementById("commentText").value;
+
+            const commentHTML = `
+                <div class="comment">
+                    <strong>${username}</strong><br>
+                    <p>${comment}</p>
+                </div>
+            `;
+            document.getElementById("commentsSection").innerHTML += commentHTML;
+        });
+    </script>
+</body>
+</html>
